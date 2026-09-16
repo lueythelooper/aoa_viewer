@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Angle of Arrival</title>
+<style>
+  :root {
+    --bg: #0b0e13;
+    --panel-bg: #11151c;
+    --panel-border: #232a36;
+    --text: #e6e9ef;
+    --text-dim: #7c8798;
+    --accent: #4fd1c5;
+    --accent-dim: #2a5f5a;
+    --warn: #e0a458;
+    --bad: #e0575f;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Segoe UI", -apple-system, sans-serif;
+    overflow: hidden;
+  }
+  #app {
+    display: flex;
+    height: 100vh;
+    width: 100vw;
+  }
+  #status-panel {
+    width: 280px;
+    min-width: 280px;
+    background: var(--panel-bg);
+    border-right: 1px solid var(--panel-border);
+    display: flex;
+    flex-direction: column;
+    padding: 16px;
+  }
+  #status-panel h1 {
+    font-size: 15px;
+    font-weight: 600;
+    margin: 0 0 4px 0;
+    letter-spacing: 0.02em;
+  }
+  #status-panel .subtitle {
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-bottom: 20px;
+  }
+  #status-body {
+    flex: 1;
+    border: 1px dashed var(--panel-border);
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-dim);
+    font-size: 12px;
+    text-align: center;
+    padding: 16px;
+  }
+  #viewport {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+  }
+  #viewport canvas { display: block; }
+  #readout {
+    position: absolute;
+    top: 16px;
+    left: 16px;
+    background: rgba(17, 21, 28, 0.85);
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    padding: 14px 18px;
+    font-size: 13px;
+    line-height: 1.7;
+    min-width: 220px;
+    backdrop-filter: blur(4px);
+  }
+  #readout .row { display: flex; justify-content: space-between; gap: 20px; }
+  #readout .label { color: var(--text-dim); }
+  #readout .value { font-variant-numeric: tabular-nums; font-weight: 600; }
+  #readout .value.az { color: var(--accent); }
+  #readout .value.el { color: #f2c14e; }
+  #conn-dot {
+    display: inline-block;
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    margin-right: 6px;
+    background: var(--bad);
+  }
+  #conn-dot.live { background: var(--accent); }
+  #legend {
+    position: absolute;
+    bottom: 16px;
+    left: 16px;
+    font-size: 11px;
+    color: var(--text-dim);
+    background: rgba(17, 21, 28, 0.85);
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    padding: 10px 14px;
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="status-panel">
+    <h1>System Status</h1>
+    <div class="subtitle">Reserved for future telemetry</div>
+    <div id="status-body">
+      (status indicators will appear here)
+    </div>
+  </div>
+  <div id="viewport">
+    <div id="readout">
+      <div class="row"><span class="label"><span id="conn-dot"></span>Link</span><span class="value" id="conn-state">Waiting…</span></div>
+      <div class="row"><span class="label">Azimuth</span><span class="value az" id="az-value">--.-°</span></div>
+      <div class="row"><span class="label">Elevation</span><span class="value el" id="el-value">--.-°</span></div>
+      <div class="row"><span class="label">Beam width</span><span class="value" id="beam-value">--.-°</span></div>
+      <div class="row"><span class="label">UDP timestamp</span><span class="value" id="ts-value">--</span></div>
+      <div class="row"><span class="label">Age</span><span class="value" id="age-value">--</span></div>
+      <div class="row"><span class="label">Source</span><span class="value" id="src-value">--</span></div>
+    </div>
+    <div id="legend">Azimuth: clockwise from North (+Z), 0°&nbsp;=&nbsp;North, 90°&nbsp;=&nbsp;East &nbsp;|&nbsp; Elevation: up from horizon &nbsp;|&nbsp; Beam: 3° cone from platform (fixed until sent by packet) &nbsp;|&nbsp; drag to orbit, scroll to zoom</div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+(function () {
+  const viewport = document.getElementById('viewport');
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0b0e13);
+  scene.fog = new THREE.Fog(0x0b0e13, 20, 60);
+
+  const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 1000);
+  camera.position.set(14, 10, 14);
+
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(window.devicePixelRatio);
+  viewport.appendChild(renderer.domElement);
+
+  const controls = new THREE.OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+  controls.target.set(0, 0, 0);
+
+  function resize() {
+    const w = viewport.clientWidth;
+    const h = viewport.clientHeight;
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+    renderer.setSize(w, h);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // Lighting
+  scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+  const dirLight = new THREE.DirectionalLight(0xffffff, 0.6);
+  dirLight.position.set(10, 20, 10);
+  scene.add(dirLight);
+
+  // Ground grid (horizon plane)
+  const grid = new THREE.GridHelper(30, 30, 0x2a3444, 0x1a212c);
+  scene.add(grid);
+
+  // Compass ring with degree ticks, radius matches arrow length
+  const RADIUS = 8;
+  const ringGeom = new THREE.RingGeometry(RADIUS - 0.03, RADIUS + 0.03, 128);
+  const ringMat = new THREE.MeshBasicMaterial({ color: 0x2a3444, side: THREE.DoubleSide });
+  const ring = new THREE.Mesh(ringGeom, ringMat);
+  ring.rotation.x = -Math.PI / 2;
+  scene.add(ring);
+
+  function azElToDirection(azDeg, elDeg) {
+    const az = THREE.MathUtils.degToRad(azDeg);
+    const el = THREE.MathUtils.degToRad(elDeg);
+    // Azimuth clockwise (viewed from above) from North (+Z), Elevation up from horizon (+Y).
+    // Negated so increasing azimuth sweeps clockwise, not counterclockwise, on screen.
+    const x = -Math.cos(el) * Math.sin(az);
+    const z = Math.cos(el) * Math.cos(az);
+    const y = Math.sin(el);
+    return new THREE.Vector3(x, y, z).normalize();
+  }
+
+  // Cardinal direction labels via simple colored axis lines
+  function addAxisLine(dir, color) {
+    const geom = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(0, 0, 0),
+      dir.clone().multiplyScalar(RADIUS + 1.5)
+    ]);
+    const mat = new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.35 });
+    scene.add(new THREE.Line(geom, mat));
+  }
+  addAxisLine(new THREE.Vector3(0, 0, 1), 0x4fd1c5);  // North
+  addAxisLine(new THREE.Vector3(-1, 0, 0), 0x7c8798);  // East (az 90 under the clockwise convention above)
+  addAxisLine(new THREE.Vector3(0, 1, 0), 0x7c8798);  // Up
+
+  // North reference marker (azimuth 0 = +Z): a post + billboard "N" label
+  // on the compass ring, so orientation stays clear while orbiting.
+  function makeTextSprite(text, color) {
+    const canvas = document.createElement('canvas');
+    canvas.width = 128;
+    canvas.height = 128;
+    const ctx = canvas.getContext('2d');
+    ctx.font = 'bold 88px "Segoe UI", sans-serif';
+    ctx.fillStyle = color;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, 64, 68);
+
+    const texture = new THREE.CanvasTexture(canvas);
+    const material = new THREE.SpriteMaterial({ map: texture, depthTest: false, transparent: true });
+    const sprite = new THREE.Sprite(material);
+    sprite.scale.set(1.4, 1.4, 1);
+    return sprite;
+  }
+
+  const northPost = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.05, 0.05, 1.2, 12),
+    new THREE.MeshStandardMaterial({ color: 0x4fd1c5, emissive: 0x0d3330 })
+  );
+  northPost.position.set(0, 0.6, RADIUS);
+  scene.add(northPost);
+
+  const northLabel = makeTextSprite('N', '#4fd1c5');
+  northLabel.position.set(0, 1.9, RADIUS);
+  scene.add(northLabel);
+
+  // Platform marker at origin
+  const platformGeom = new THREE.SphereGeometry(0.35, 24, 24);
+  const platformMat = new THREE.MeshStandardMaterial({ color: 0x4fd1c5, emissive: 0x0d3330 });
+  const platform = new THREE.Mesh(platformGeom, platformMat);
+  scene.add(platform);
+
+  // AoA beam: a translucent cone with its apex at the platform, opening
+  // outward along the arrival direction. Width defaults to 3 deg (full
+  // angle) until the UDP packet carries its own beam-width field, at
+  // which point setBeamWidth() below will resize the cone per packet.
+  const DEFAULT_BEAM_WIDTH_DEG = 3;
+  const LOCAL_BEAM_AXIS = new THREE.Vector3(0, -1, 0);
+
+  const beamMat = new THREE.MeshStandardMaterial({
+    color: 0xf2c14e,
+    transparent: true,
+    opacity: 0.28,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+    emissive: 0x4a3210,
+    emissiveIntensity: 0.3,
+  });
+  const beamRimMat = new THREE.LineBasicMaterial({ color: 0xf2c14e, transparent: true, opacity: 0.6 });
+
+  let beamWidthDeg = null;
+  let beamMesh = null;
+  let beamRim = null;
+
+  function buildBeamGeometry(widthDeg) {
+    const halfAngleRad = THREE.MathUtils.degToRad(widthDeg / 2);
+    const baseRadius = RADIUS * Math.tan(halfAngleRad);
+    const geom = new THREE.ConeGeometry(baseRadius, RADIUS, 40, 1, true);
+    geom.translate(0, -RADIUS / 2, 0); // apex -> local origin, base -> -Y*RADIUS
+    return geom;
+  }
+
+  function setBeamWidth(widthDeg) {
+    beamWidthDeg = widthDeg;
+    const geom = buildBeamGeometry(widthDeg);
+
+    if (beamMesh) { scene.remove(beamMesh); beamMesh.geometry.dispose(); }
+    beamMesh = new THREE.Mesh(geom, beamMat);
+    scene.add(beamMesh);
+
+    if (beamRim) { scene.remove(beamRim); beamRim.geometry.dispose(); }
+    beamRim = new THREE.LineSegments(new THREE.EdgesGeometry(geom, 1), beamRimMat);
+    scene.add(beamRim);
+  }
+  setBeamWidth(DEFAULT_BEAM_WIDTH_DEG);
+
+  // Target marker at the beam's center tip
+  const targetGeom = new THREE.SphereGeometry(0.16, 16, 16);
+  const targetMat = new THREE.MeshStandardMaterial({ color: 0xf2c14e, emissive: 0x4a3210 });
+  const target = new THREE.Mesh(targetGeom, targetMat);
+  scene.add(target);
+
+  function updateBeam(azDeg, elDeg, widthDeg) {
+    const width = typeof widthDeg === 'number' ? widthDeg : DEFAULT_BEAM_WIDTH_DEG;
+    if (width !== beamWidthDeg) setBeamWidth(width);
+
+    const dir = azElToDirection(azDeg, elDeg);
+    const quat = new THREE.Quaternion().setFromUnitVectors(LOCAL_BEAM_AXIS, dir);
+    beamMesh.quaternion.copy(quat);
+    beamRim.quaternion.copy(quat);
+    target.position.copy(dir.clone().multiplyScalar(RADIUS));
+  }
+  updateBeam(0, 0, DEFAULT_BEAM_WIDTH_DEG);
+
+  function animate() {
+    requestAnimationFrame(animate);
+    controls.update();
+    renderer.render(scene, camera);
+  }
+  animate();
+
+  // --- Live data via WebSocket ---
+  const connDot = document.getElementById('conn-dot');
+  const connState = document.getElementById('conn-state');
+  const azValue = document.getElementById('az-value');
+  const elValue = document.getElementById('el-value');
+  const beamValue = document.getElementById('beam-value');
+  const tsValue = document.getElementById('ts-value');
+  const ageValue = document.getElementById('age-value');
+  const srcValue = document.getElementById('src-value');
+
+  let lastReceivedAt = null;
+
+  function setConnected(isLive) {
+    connDot.classList.toggle('live', isLive);
+    connState.textContent = isLive ? 'Live' : 'Disconnected';
+  }
+
+  function connect() {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const ws = new WebSocket(`${proto}://${location.host}/ws`);
+
+    ws.onopen = () => setConnected(true);
+    ws.onclose = () => { setConnected(false); setTimeout(connect, 1500); };
+    ws.onerror = () => ws.close();
+
+    ws.onmessage = (evt) => {
+      const msg = JSON.parse(evt.data);
+      updateBeam(msg.azimuth_deg, msg.elevation_deg, msg.beam_width_deg);
+      azValue.textContent = msg.azimuth_deg.toFixed(1) + '°';
+      elValue.textContent = msg.elevation_deg.toFixed(1) + '°';
+      beamValue.textContent = (msg.beam_width_deg != null ? msg.beam_width_deg : DEFAULT_BEAM_WIDTH_DEG).toFixed(1) + '°';
+      tsValue.textContent = msg.udp_timestamp;
+      srcValue.textContent = msg.source || '--';
+      lastReceivedAt = msg.received_at;
+    };
+  }
+  connect();
+
+  setInterval(() => {
+    if (lastReceivedAt != null) {
+      const age = (Date.now() / 1000) - lastReceivedAt;
+      ageValue.textContent = age.toFixed(1) + 's';
+    }
+  }, 200);
+})();
+</script>
+</body>
+</html>
